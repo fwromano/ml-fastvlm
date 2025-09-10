@@ -121,3 +121,23 @@ Our codebase is built using multiple opensource contributions, please see [ACKNO
 ## License
 Please check out the repository [LICENSE](LICENSE) before using the provided code and
 [LICENSE_MODEL](LICENSE_MODEL) for the released models.
+
+## YOLO Segmentation GUI (People + Cars)
+This repository also includes a small YOLOv8-segmentation GUI that mirrors the FastVLM video UI. It detects people and cars and overlays instance masks and labels on each video frame.
+
+Usage:
+
+```bash
+bash scripts/run_yolo.sh                      # auto-creates env, installs ultralytics + deps
+
+# Options:
+#   --model <weights_or_hub_id>  e.g., yolov8n-seg.pt (faster) or yolov8m-seg.pt (higher quality)
+#   --video <path>               preload a video file
+#   --conda | --no-conda         force conda or venv
+#   --env-name <name>            environment name (conda)
+#   --python <ver>               python version for new env
+```
+
+Defaults:
+- Model: `yolov8s-seg.pt` (auto-downloaded by Ultralytics on first run)
+- Device: auto (CPU/GPU/MPS via PyTorch if available)
