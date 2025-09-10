@@ -12,6 +12,7 @@ PYTHON_VERSION=${PYTHON_VERSION:-3.10}
 USE_CONDA=${USE_CONDA:-auto}   # auto|yes|no
 YOLO_MODEL=${YOLO_MODEL:-yolov8s-seg.pt}
 DEFAULT_VIDEO=${DEFAULT_VIDEO:-/Users/agc/Documents/output.mp4}
+MODEL_DIR=${MODEL_DIR:-checkpoints/llava-fastvithd_1.5b_stage3}
 
 # Args
 while [[ $# -gt 0 ]]; do
@@ -22,6 +23,7 @@ while [[ $# -gt 0 ]]; do
     --no-conda) USE_CONDA=no; shift ;;
     --model) YOLO_MODEL="$2"; shift 2 ;;
     --video) DEFAULT_VIDEO="$2"; shift 2 ;;
+    --vlm-dir) MODEL_DIR="$2"; shift 2 ;;
     --help|-h)
       cat <<EOF
 Usage: $0 [options]
@@ -30,6 +32,7 @@ Usage: $0 [options]
   --conda | --no-conda  Force conda or venv (default: auto)
   --model <weights>     YOLO weights or hub id (default: $YOLO_MODEL)
   --video <path>        Preload this video in GUI (default: $DEFAULT_VIDEO)
+  --vlm-dir <path>      FastVLM model directory (default: $MODEL_DIR)
 EOF
       exit 0 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
@@ -106,6 +109,15 @@ reqs = {
   'numpy': ('numpy', None),
   'torch': ('torch', None),
   'torchvision': ('torchvision', None),
+  # Minimal FastVLM deps (skip bitsandbytes for macOS)
+  'transformers': ('transformers', '==4.48.3'),
+  'tokenizers': ('tokenizers', '==0.21.0'),
+  'sentencepiece': ('sentencepiece', '==0.1.99'),
+  'accelerate': ('accelerate', '==1.6.0'),
+  'peft': ('peft', '>=0.10.0,<0.14.0'),
+  'einops': ('einops', '==0.6.1'),
+  'einops-exts': ('einops-exts', '==0.0.4'),
+  'timm': ('timm', '==1.0.15'),
 }
 
 missing = []
@@ -147,6 +159,11 @@ rest = [p for p in ['ultralytics','opencv-python','Pillow','numpy'] if p in miss
 if rest:
     pip_install(rest)
 
+# FastVLM deps (skip bitsandbytes on macOS)
+extra = [p for p in ['transformers','tokenizers','sentencepiece','accelerate','peft','einops','einops-exts','timm'] if p in missing]
+if extra:
+    pip_install(extra)
+
 print("OK")
 PY
 }
@@ -158,5 +175,5 @@ run_install_plan "$PLAN_JSON"
 # Launch GUI with environment hints
 export YOLO_MODEL
 export VIDEO_PATH="$DEFAULT_VIDEO"
+export MODEL_DIR
 python3 scripts/yolo_video_gui.py
-

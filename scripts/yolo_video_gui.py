@@ -8,11 +8,42 @@ from typing import Tuple, List
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
+import time
+import torch
+
+# Ensure local 'llava' package is importable without pip installing the repo
+import sys
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+# FastVLM (LLaVA) imports for visual captioning
+try:
+    from llava.constants import DEFAULT_IMAGE_TOKEN, IMAGE_TOKEN_INDEX
+    from llava.model.builder import load_pretrained_model
+    from llava.mm_utils import get_model_name_from_path, process_images, tokenizer_image_token
+    from llava.conversation import conv_templates
+    _HAS_VLM = True
+except Exception:
+    _HAS_VLM = False
 
 
-# Runtime selection of device happens inside ultralytics via torch; we avoid torch import here
+# Runtime selection for YOLO happens inside ultralytics/torch
 DEFAULT_MODEL = os.environ.get("YOLO_MODEL", "yolov8s-seg.pt")
 DEFAULT_VIDEO = os.environ.get("VIDEO_PATH", "/Users/agc/Documents/output.mp4")
+DEFAULT_VLM_DIR = os.environ.get("MODEL_DIR", "checkpoints/llava-fastvithd_1.5b_stage3")
+# Prefer CPU for VLM by default on macOS to avoid MPS matmul crashes
+VLM_FORCE_CPU = os.environ.get("VLM_FORCE_CPU", "1") not in ("0", "false", "False")
+
+def _pick_device() -> str:
+    try:
+        if torch.backends.mps.is_available():
+            return "mps"
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
 
 
 def _ensure_rgb(pil: Image.Image) -> Image.Image:
@@ -31,7 +62,7 @@ def _color_for_class(cls_id: int) -> Tuple[int, int, int, int]:
     return (60, 200, 80, 90)
 
 
-def _draw_overlay(frame_rgb: np.ndarray, boxes: np.ndarray, classes: List[int], confs: List[float], masks: np.ndarray, names: List[str]) -> np.ndarray:
+def _draw_overlay(frame_rgb: np.ndarray, boxes: np.ndarray, classes: List[int], confs: List[float], masks: np.ndarray, names: List[str], captions: List[str] | None = None) -> np.ndarray:
     h, w, _ = frame_rgb.shape
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     ol = np.array(overlay)
@@ -67,7 +98,12 @@ def _draw_overlay(frame_rgb: np.ndarray, boxes: np.ndarray, classes: List[int], 
         color_rgb = _color_for_class(cls_id)[:3]
         color_bgr = (int(color_rgb[2]), int(color_rgb[1]), int(color_rgb[0]))
         cv2.rectangle(out_bgr, (x1, y1), (x2, y2), color_bgr, 2)
-        label = f"{name} {conf:.2f}"
+        cap = None if captions is None or i >= len(captions) else captions[i]
+        # Only append caption if it's non-empty and not a placeholder
+        if cap and cap != 'pending':
+            label = f"{name} {conf:.2f} - {cap}"
+        else:
+            label = f"{name} {conf:.2f}"
         (tw, th), bl = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         cv2.rectangle(out_bgr, (x1, y1 - th - 6), (x1 + tw + 4, y1), color_bgr, -1)
         cv2.putText(out_bgr, label, (x1 + 2, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
@@ -122,8 +158,13 @@ class App(tk.Tk):
         ttk.Label(frm, text="Current frame:").grid(row=5, column=0, sticky=tk.NW)
         self.preview_label = ttk.Label(frm)
         self.preview_label.grid(row=5, column=1, sticky=tk.NSEW)
+        # Side panel for VLM outputs
+        ttk.Label(frm, text="VLM descriptions:").grid(row=5, column=3, sticky=tk.NW, padx=(10,0))
+        self.captions_text = tk.Text(frm, height=30, width=40, wrap='word')
+        self.captions_text.grid(row=5, column=4, sticky=tk.NSEW)
 
         frm.columnconfigure(1, weight=1)
+        frm.columnconfigure(4, weight=1)
         frm.rowconfigure(5, weight=1)
 
         self.cap = None
@@ -134,6 +175,14 @@ class App(tk.Tk):
         self.model = None
         self.names = []
         self.last_det_image = None  # PIL.Image with overlays
+        # VLM components
+        self.vlm = None  # dict(tokenizer, model, proc)
+        self.vlm_device = 'cpu' if VLM_FORCE_CPU else _pick_device()
+        self.vlm_cache = {}  # key -> (caption, timestamp)
+        self.vlm_sem = threading.Semaphore(1)
+        self.vlm_lock = threading.Lock()
+        self.tracks = []  # [{id, cls, box}]
+        self.next_track_id = 1
 
         # Preload video
         if os.path.isfile(self.video_var.get()):
@@ -141,6 +190,18 @@ class App(tk.Tk):
 
         # Async model load
         self._load_model_async(self.model_var.get())
+
+        # VLM controls
+        ttk.Label(frm, text="VLM dir:").grid(row=2, column=3, sticky=tk.W, padx=(10,0))
+        self.vlm_var = tk.StringVar(value=DEFAULT_VLM_DIR)
+        self.vlm_entry = ttk.Entry(frm, textvariable=self.vlm_var, width=50)
+        self.vlm_entry.grid(row=2, column=4, sticky=tk.EW, padx=(4,4))
+        ttk.Button(frm, text="Load VLM", command=self.reload_vlm).grid(row=2, column=5)
+        frm.columnconfigure(4, weight=1)
+
+        if _HAS_VLM and os.path.isdir(DEFAULT_VLM_DIR):
+            # Use CPU by default to be robust on macOS
+            self._load_vlm_async(DEFAULT_VLM_DIR, force_device=('cpu' if VLM_FORCE_CPU else None))
 
     def browse_video(self):
         p = filedialog.askopenfilename(title="Select video", filetypes=[("Video", "*.mp4 *.mov *.avi *.mkv"), ("All files", "*.*")])
@@ -171,8 +232,19 @@ class App(tk.Tk):
         self.inf_btn.configure(text="Stop Detection" if self.infer_on else "Start Detection")
         if not self.infer_on:
             self.last_det_image = None
-        if self.infer_on and not self.infer_busy and self.current_frame is not None and self.model is not None:
-            self._run_detection_on_current()
+        # If turning on and we have a frame + model, run one detection immediately to show overlays
+        if self.infer_on and self.current_frame is not None and self.model is not None:
+            try:
+                disp = self._detect_sync(self.current_frame)
+                self.last_det_image = disp
+                pw, ph = disp.size
+                s = min(900 / max(pw, 1), 600 / max(ph, 1), 1.0)
+                show = disp.resize((int(pw * s), int(ph * s)))
+                photo = ImageTk.PhotoImage(show)
+                self.preview_label.configure(image=photo)
+                self.preview_label.image = photo
+            except Exception:
+                pass
 
     def _open_capture(self, path: str):
         try:
@@ -187,6 +259,41 @@ class App(tk.Tk):
             return
         self.status_var.set("Ready • video loaded")
         self.last_det_image = None
+
+    def reload_vlm(self):
+        path = self.vlm_var.get().strip()
+        if not _HAS_VLM:
+            messagebox.showerror("VLM unavailable", "llava is not installed in this environment.")
+            return
+        if not os.path.isdir(path):
+            messagebox.showerror("Invalid path", f"VLM model directory not found:\n{path}")
+            return
+        self._load_vlm_async(path)
+
+    def _load_vlm_async(self, model_dir: str, force_device: str | None = None):
+        self.status_var.set("Loading VLM model…")
+        def worker():
+            try:
+                dev = force_device or self.vlm_device
+                model_name = get_model_name_from_path(model_dir)
+                tokenizer, model, image_processor, _ = load_pretrained_model(model_dir, None, model_name, device=dev)
+                model.eval()
+                if hasattr(model.config, "mm_use_im_start_end"):
+                    model.config.mm_use_im_start_end = False
+            except Exception as e:
+                err = str(e)
+                def fail():
+                    messagebox.showerror("VLM load failed", err)
+                    self.status_var.set("Ready")
+                self.after(0, fail)
+                return
+            def done():
+                self.vlm = {"tokenizer": tokenizer, "model": model, "proc": image_processor}
+                if force_device is not None:
+                    self.vlm_device = force_device
+                self.status_var.set("Ready • VLM loaded")
+            self.after(0, done)
+        threading.Thread(target=worker, daemon=True).start()
 
     def _video_loop(self):
         if self.cap is None:
@@ -272,6 +379,7 @@ class App(tk.Tk):
         if getattr(res, 'masks', None) is not None and res.masks is not None and res.masks.data is not None:
             masks = res.masks.data.cpu().numpy()  # (N, h, w)
 
+        # Filter for person/car
         keep = []
         for i, c in enumerate(clses):
             if (c == 0 and want_person) or (c == 2 and want_car):
@@ -283,13 +391,147 @@ class App(tk.Tk):
             if masks is not None:
                 masks = masks[keep]
         else:
-            # If nothing matched filters but detections exist, show all to verify pipeline
             if boxes_xyxy.shape[0] == 0:
+                # Nothing to show
+                self._update_captions_panel([], [], [], [])
                 return pil_img
 
-        out_bgr = _draw_overlay(cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR), boxes_xyxy, clses.tolist(), confs.tolist(), masks, self.names)
+        # Associate detections to tracks (IoU) for persistence of captions
+        def iou(a, b):
+            ax1, ay1, ax2, ay2 = a; bx1, by1, bx2, by2 = b
+            ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+            ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+            iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+            inter = iw * ih
+            if inter <= 0:
+                return 0.0
+            aarea = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+            barea = max(0, bx2 - bx1) * max(0, by2 - by1)
+            union = aarea + barea - inter
+            return inter / union if union > 0 else 0.0
+
+        matched_track_ids = []
+        captions = [None] * len(boxes_xyxy)
+        new_tracks = []
+        for i, (x1, y1, x2, y2) in enumerate(boxes_xyxy):
+            box = (int(x1), int(y1), int(x2), int(y2))
+            cls_i = int(clses[i])
+            # find best track match by IoU for same class
+            best_tid, best_iou = None, 0.0
+            for tr in self.tracks:
+                if tr['cls'] != cls_i:
+                    continue
+                ov = iou(box, tr['box'])
+                if ov > best_iou:
+                    best_iou, best_tid = ov, tr['id']
+            if best_tid is not None and best_iou >= 0.3:
+                tid = best_tid
+                # update track box
+                for tr in self.tracks:
+                    if tr['id'] == tid:
+                        tr['box'] = box
+                        break
+                matched_track_ids.append(tid)
+            else:
+                tid = self.next_track_id; self.next_track_id += 1
+                new_tracks.append({'id': tid, 'cls': cls_i, 'box': box})
+                matched_track_ids.append(tid)
+            # caption fetch/enqueue
+            cap = self._vlm_get_or_enqueue(pil_img, box, f"tid:{tid}")
+            captions[i] = cap
+        # keep only matched + new tracks
+        keep_ids = set(matched_track_ids)
+        self.tracks = [tr for tr in self.tracks if tr['id'] in keep_ids] + new_tracks
+
+        out_bgr = _draw_overlay(cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR), boxes_xyxy, clses.tolist(), confs.tolist(), masks, self.names, captions=captions)
         out_rgb = cv2.cvtColor(out_bgr, cv2.COLOR_BGR2RGB)
+        # Update side panel
+        try:
+            self._update_captions_panel(boxes_xyxy, clses, confs, captions)
+        except Exception:
+            pass
         return Image.fromarray(out_rgb)
+
+    def _update_captions_panel(self, boxes, clses, confs, captions):
+        lines = []
+        for i in range(len(captions)):
+            name = self.names[int(clses[i])] if 0 <= int(clses[i]) < len(self.names) else str(int(clses[i]))
+            cap = captions[i]
+            if not cap:
+                cap = 'pending'
+            lines.append(f"- {name} ({confs[i]:.2f}): {cap}")
+        text = "\n".join(lines) if lines else "(no detections)"
+        self.captions_text.delete('1.0', tk.END)
+        self.captions_text.insert(tk.END, text)
+
+    def _vlm_get_or_enqueue(self, pil_img: Image.Image, box: tuple, key: str) -> str:
+        now = time.time()
+        val = self.vlm_cache.get(key)
+        if val and (now - val[1] < 10.0):
+            return val[0]
+        if self.vlm is None or not _HAS_VLM:
+            return '(VLM not loaded)'
+        if self.vlm_sem.acquire(blocking=False):
+            x1, y1, x2, y2 = box
+            w, h = pil_img.size
+            dx = int(0.05 * (x2 - x1 + 1)); dy = int(0.05 * (y2 - y1 + 1))
+            x1e = max(0, x1 - dx); y1e = max(0, y1 - dy); x2e = min(w, x2 + dx); y2e = min(h, y2 + dy)
+            crop = pil_img.crop((x1e, y1e, x2e, y2e)).convert("RGB")
+            threading.Thread(target=self._vlm_caption_worker, args=(crop, key), daemon=True).start()
+        return 'pending'
+
+    def _vlm_caption_worker(self, crop: Image.Image, key: str):
+        try:
+            prompt = "Concisely describe this."
+            tokenizer = self.vlm["tokenizer"]
+            model = self.vlm["model"]
+            proc = self.vlm["proc"]
+            # Mirror demo_video_fastvlm.py pattern exactly
+            conv = conv_templates["llava_v1"].copy()
+            user_prompt = f"{DEFAULT_IMAGE_TOKEN}\n{prompt.strip()}"
+            conv.append_message(conv.roles[0], user_prompt)
+            conv.append_message(conv.roles[1], None)
+            full_prompt = conv.get_prompt()
+
+            images = [crop.convert("RGB")]
+            dtype = torch.float16 if self.vlm_device != "cpu" else torch.float32
+            image_tensor = process_images(images, proc, model.config).to(model.device, dtype=dtype)
+            input_ids = tokenizer_image_token(full_prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(model.device)
+            with torch.inference_mode():
+                with self.vlm_lock:
+                    output_ids = model.generate(
+                        inputs=input_ids,
+                        images=image_tensor,
+                        image_sizes=[images[0].size],
+                        do_sample=False,
+                        max_new_tokens=48,
+                        use_cache=True,
+                    )
+            raw = tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
+            ans = raw
+            try:
+                ptxt = prompt.strip()
+                if ans.lower().startswith(ptxt.lower()):
+                    ans = ans[len(ptxt):].lstrip(':\n ').strip()
+            except Exception:
+                pass
+            self.vlm_cache[key] = (ans, time.time())
+        except Exception as e:
+            import traceback
+            msg = ''.join(traceback.format_exc())
+            print(f"[vlm] caption error for key={key}: {msg}")
+            # Auto-fallback: if on GPU/MPS, reload VLM on CPU and retry once
+            if self.vlm_device != 'cpu':
+                try:
+                    self._load_vlm_async(self.vlm_var.get().strip() or DEFAULT_VLM_DIR, force_device='cpu')
+                except Exception:
+                    pass
+            self.vlm_cache[key] = (f"error: {str(e)[:60]}", time.time())
+        finally:
+            try:
+                self.vlm_sem.release()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
