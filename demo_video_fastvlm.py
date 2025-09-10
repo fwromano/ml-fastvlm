@@ -8,7 +8,7 @@ from llava.model.builder import load_pretrained_model
 from llava.mm_utils import get_model_name_from_path, process_images, tokenizer_image_token
 from llava.conversation import conv_templates
 
-MODEL_DIR = os.environ.get("MODEL_DIR") or "checkpoints/fastvlm_7b_stage3"
+MODEL_DIR = os.environ.get("MODEL_DIR") or "checkpoints/llava-fastvithd_1.5b_stage3"
 device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
 model_name = get_model_name_from_path(MODEL_DIR)
 tokenizer, model, image_processor, context_len = load_pretrained_model(MODEL_DIR, None, model_name, device=device)
@@ -86,5 +86,17 @@ with gr.Blocks() as demo:
     out_image = gr.Image(label="Frames mosaic the model saw", type="pil")
     run_btn.click(run, inputs=[video, prompt, frames], outputs=[out_text, out_image])
 
+# Note: We avoid gradio queue customization to keep behavior identical to the repo.
+
 if __name__ == "__main__":
-    demo.launch(server_name="127.0.0.1", server_port=7860, show_api=False)
+    # Allow forcing share via env var; also fallback to share=True if localhost isn't accessible.
+    share_env = os.environ.get("DEMO_SHARE")
+    share = None if share_env is None else (share_env not in ("0", "false", "False"))
+    try:
+        demo.launch(server_name="0.0.0.0", server_port=7860, show_api=False, share=(share or False))
+    except ValueError as e:
+        msg = str(e)
+        if "shareable link must be created" in msg or "localhost is not accessible" in msg:
+            demo.launch(server_name="0.0.0.0", server_port=7860, show_api=False, share=True)
+        else:
+            raise

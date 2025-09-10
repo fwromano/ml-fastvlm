@@ -60,6 +60,35 @@ python predict.py --model-path /path/to/checkpoint-dir \
                   --prompt "Describe the image."
 ```
 
+### Quickstart Demo
+You can use the smart launcher to set up an environment, verify dependencies, ensure a model is present, and run the Gradio demo:
+
+```bash
+bash scripts/run_demo.sh                 # uses conda if available, otherwise venv
+bash scripts/run_demo.sh --model-dir checkpoints/fastvlm_7b_stage3
+
+# Options:
+#   --env-name <name>     Conda env name (default: fastvlm)
+#   --python <version>    Python version for new env (default: 3.10)
+#   --conda | --no-conda  Force using conda or venv (default: auto)
+#   --video <path>        Run headless CLI on a video (no UI)
+#   --prompt <text>       Prompt for CLI mode
+#   --frames <n>          Number of frames to sample for CLI mode
+```
+
+### Headless Video → Text (no UI)
+If you just want to sample frames from a video and run the model without the web UI:
+
+```bash
+# Using the launcher (recommended)
+bash scripts/run_demo.sh --video /path/to/video.mp4 --prompt "Describe the clip." --frames 9
+
+# Or call the script directly (ensure env is activated)
+python scripts/video_predict.py --video /path/to/video.mp4 \
+  --model-dir checkpoints/llava-fastvithd_0.5b_stage3 \
+  --prompt "Describe the clip." --frames 9 --save-grid out_mosaic.jpg
+```
+
 ### Inference on Apple Silicon
 To run inference on Apple Silicon, pytorch checkpoints have to be exported to format 
 suitable for running on Apple Silicon, detailed instructions and code can be found [`model_export`](model_export/) subfolder.

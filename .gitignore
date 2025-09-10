@@ -139,3 +139,27 @@ dmypy.json
 
 # FastVLM models
 app/FastVLM/model
+
+# Local ML model artifacts (large)
+checkpoints/
+exported/
+.native/
+*.mlpackage
+
+# Videos and large media captured locally
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# Editor settings
+.vscode/
+*.swp
+*~
+
+# Additional Xcode/Apple build junk
+DerivedData/
+app/build/
+*.dSYM
+app/FastVLM.xcodeproj/xcuserdata/
+app/FastVLM.xcodeproj/project.xcworkspace/xcuserdata/
