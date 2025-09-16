@@ -8,7 +8,7 @@ from llava.model.builder import load_pretrained_model
 from llava.mm_utils import get_model_name_from_path, process_images, tokenizer_image_token
 from llava.conversation import conv_templates
 
-MODEL_DIR = os.environ.get("MODEL_DIR") or "checkpoints/llava-fastvithd_1.5b_stage3"
+MODEL_DIR = os.environ.get("MODEL_DIR") or "checkpoints/llava-fastvithd_7b_stage3"
 device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
 model_name = get_model_name_from_path(MODEL_DIR)
 tokenizer, model, image_processor, context_len = load_pretrained_model(MODEL_DIR, None, model_name, device=device)
@@ -49,7 +49,7 @@ def make_grid(pil_images, grid_cols=None):
     return canvas
 
 @torch.inference_mode()
-def run(video, prompt, frames=9, max_new_tokens=128, temperature=0.2):
+def run(video, prompt, frames=9, max_new_tokens=75, temperature=0.0):
     frames_list = sample_frames(video, max_frames=frames)
     grid = make_grid(frames_list)
     conv = conv_templates["llava_v1"].copy()
@@ -74,12 +74,26 @@ def run(video, prompt, frames=9, max_new_tokens=128, temperature=0.2):
         ans = ans[len(prompt):].strip(": \n")
     return ans, grid
 
+DEFAULT_PROMPT = (
+    "Return ONLY minimal JSON for visible vehicles.\n\n"
+    "Schema (use exactly these keys):\n"
+    "{\n"
+    "  \"vehicles\": [\n"
+    "    {\"id\":\"v1\",\"type\":\"<sedan|suv|truck|van|bus|motorcycle|bicycle|unknown>\",\"color\":\"<e.g., white>\",\"notes\":[\"<e.g., parked|moving>\"]}\n"
+    "  ]\n"
+    "}\n\n"
+    "Rules:\n"
+    "- Output JSON only; no prose, no code fences.\n"
+    "- If no vehicles, use \"vehicles\": [].\n"
+    "- Use ids v1, v2, …; lowercase all strings; lists ≤3 items; omit a field if you cannot infer it; ensure valid JSON."
+)
+
 with gr.Blocks() as demo:
     gr.Markdown("FastVLM Video → Text Demo")
     with gr.Row():
         video = gr.Video(label="Video", sources=["upload"], height=300)
         with gr.Column():
-            prompt = gr.Textbox(label="Prompt", value="Describe the key events in this clip succinctly.")
+            prompt = gr.Textbox(label="Prompt", value=DEFAULT_PROMPT)
             frames = gr.Slider(4, 16, value=9, step=1, label="Frames sampled")
             run_btn = gr.Button("Run")
     out_text = gr.Textbox(label="Model Output")

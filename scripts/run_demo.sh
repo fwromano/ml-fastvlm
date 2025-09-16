@@ -11,7 +11,7 @@ set -euo pipefail
 ENV_NAME=${ENV_NAME:-fastvlm}
 PYTHON_VERSION=${PYTHON_VERSION:-3.10}
 # Default model can be customized here; override at runtime with --model-dir or MODEL_DIR env var
-MODEL_DIR=${MODEL_DIR:-checkpoints/llava-fastvithd_1.5b_stage3}
+MODEL_DIR=${MODEL_DIR:-checkpoints/llava-fastvithd_7b_stage3}
 USE_CONDA=${USE_CONDA:-auto}   # auto|yes|no
 # Default video path to prefill GUI/CLI if present
 DEFAULT_VIDEO=${DEFAULT_VIDEO:-/Users/agc/Documents/output.mp4}
@@ -349,7 +349,7 @@ native_setup() {
 
 # Native video runner (MLX-VLM)
 native_video() {
-  local native_dir=${NATIVE_DIR:-exported/fastvlm_1.5b_mlx}
+  local native_dir=${NATIVE_DIR:-exported/fastvlm_7b_mlx}
   if [[ -z "${CLI_VIDEO:-}" && -f "$DEFAULT_VIDEO" ]]; then CLI_VIDEO="$DEFAULT_VIDEO"; fi
   if [[ -z "${CLI_VIDEO:-}" ]]; then
     echo "[error] No video path provided. Use --video <path> or set DEFAULT_VIDEO."; exit 1;
@@ -472,7 +472,7 @@ if changed:
 PY
   fi
   echo "[native] Using MLX model dir: $native_dir"
-  PROMPT_DEFAULT=${PROMPT_DEFAULT:-"Describe the environment and any agents inside it."}
+  PROMPT_DEFAULT=${PROMPT_DEFAULT:-$'Return ONLY minimal JSON for visible vehicles.\n\nSchema (use exactly these keys):\n{\n  "vehicles": [\n    {"id":"v1","type":"<sedan|suv|truck|van|bus|motorcycle|bicycle|unknown>","color":"<e.g., white>","notes":["<e.g., parked|moving>"]}\n  ]\n}\n\nRules:\n- Output JSON only; no prose, no code fences.\n- If no vehicles, use "vehicles": [].\n- Use ids v1, v2, …; lowercase all strings; lists ≤3 items; omit a field if you cannot infer it; ensure valid JSON.'}
   python3 scripts/mlx_video_cli.py --model "$native_dir" --video "$CLI_VIDEO" --prompt "${CLI_PROMPT:-$PROMPT_DEFAULT}" --max-new-tokens 100
 }
 
@@ -556,7 +556,7 @@ if [[ -z "${CLI_VIDEO:-}" ]]; then
     launch_mlx_gui_inline() {
       # Ensure mlx-vlm + export ready
       # Reuse native_video preparation by invoking up to before running
-      local native_dir=${NATIVE_DIR:-exported/fastvlm_1.5b_mlx}
+      local native_dir=${NATIVE_DIR:-exported/fastvlm_7b_mlx}
       # Minimal prepare: ensure patched mlx_vlm and config
       # Install mlx_vlm if needed
       if ! python3 - <<'PY'

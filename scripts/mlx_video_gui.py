@@ -53,7 +53,20 @@ class App(tk.Tk):
         self.geometry("900x700")
 
         default_video = os.environ.get("VIDEO_PATH", "/Users/agc/Documents/output.mp4")
-        default_model = os.environ.get("MODEL_DIR", "exported/fastvlm_1.5b_mlx")
+        default_model = os.environ.get("MODEL_DIR", "exported/fastvlm_7b_mlx")
+        DEFAULT_PROMPT = (
+            "Return ONLY minimal JSON for visible vehicles.\n\n"
+            "Schema (use exactly these keys):\n"
+            "{\n"
+            "  \"vehicles\": [\n"
+            "    {\"id\":\"v1\",\"type\":\"<sedan|suv|truck|van|bus|motorcycle|bicycle|unknown>\",\"color\":\"<e.g., white>\",\"notes\":[\"<e.g., parked|moving>\"]}\n"
+            "  ]\n"
+            "}\n\n"
+            "Rules:\n"
+            "- Output JSON only; no prose, no code fences.\n"
+            "- If no vehicles, use \"vehicles\": [].\n"
+            "- Use ids v1, v2, …; lowercase all strings; lists ≤3 items; omit a field if you cannot infer it; ensure valid JSON."
+        )
 
         frm = ttk.Frame(self, padding=10)
         frm.pack(fill=tk.BOTH, expand=True)
@@ -67,15 +80,12 @@ class App(tk.Tk):
         self.video_entry.grid(row=1, column=1, sticky=tk.EW, padx=(4,4))
         ttk.Button(frm, text="Browse", command=self.browse_video).grid(row=1, column=2)
 
-        ttk.Label(frm, text="Model dir:").grid(row=2, column=0, sticky=tk.W)
-        self.model_var = tk.StringVar(value=default_model)
-        self.model_entry = ttk.Entry(frm, textvariable=self.model_var, width=70)
-        self.model_entry.grid(row=2, column=1, sticky=tk.EW, padx=(4,4))
-        ttk.Button(frm, text="Browse", command=self.browse_model).grid(row=2, column=2)
+        # Model selection hidden; using env-provided default
+        self.model_dir = default_model
 
         ttk.Label(frm, text="Prompt:").grid(row=3, column=0, sticky=tk.NW)
-        self.prompt_text = tk.Text(frm, height=4, width=60)
-        self.prompt_text.insert("1.0", os.environ.get("PROMPT_DEFAULT", "Describe the environment and any agents inside it."))
+        self.prompt_text = tk.Text(frm, height=8, width=60)
+        self.prompt_text.insert("1.0", os.environ.get("PROMPT_DEFAULT", DEFAULT_PROMPT))
         self.prompt_text.grid(row=3, column=1, sticky=tk.EW, padx=(4,4))
 
         btns = ttk.Frame(frm)
@@ -146,10 +156,7 @@ class App(tk.Tk):
             self.video_var.set(p)
             self._open_capture(p)
 
-    def browse_model(self):
-        p = filedialog.askdirectory(title="Select model directory")
-        if p:
-            self.model_var.set(p)
+    # Model browsing disabled; model is fixed (from env)
 
     def toggle_play(self):
         if self.cap is None:
@@ -221,19 +228,19 @@ class App(tk.Tk):
         self.infer_busy = True
         self.status_var.set("Running inference...")
         prompt = (self.prompt_text.get("1.0", tk.END) or "").strip() or "Describe this frame."
-        model_dir = self.model_var.get().strip()
+        model_dir = self.model_dir
 
         def worker(pil_img: Image.Image):
             try:
                 if USE_API and self.model is not None and self.processor is not None and self.config is not None:
                     # Use in-memory call via MLX API (fast path)
                     prompt_fmt = mlx_apply_chat(self.processor, self.config, prompt, num_images=1)
-                    ans = mlx_generate(self.model, self.processor, prompt_fmt, image=[pil_img], temperature=0.0, max_tokens=100, verbose=False)
+                    ans = mlx_generate(self.model, self.processor, prompt_fmt, image=[pil_img], temperature=0.0, max_tokens=int(os.environ.get("MAX_TOKENS","75")), verbose=False)
                 else:
                     # Subprocess fallback
                     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
                         pil_img.save(tmp.name, format="JPEG", quality=92)
-                        ans = run_mlx_generate_subprocess(model_dir, tmp.name, prompt, max_tokens=100)
+                        ans = run_mlx_generate_subprocess(model_dir, tmp.name, prompt, max_tokens=int(os.environ.get("MAX_TOKENS","75")))
             except Exception as e:
                 err = str(e)
                 def fail():
@@ -253,6 +260,12 @@ class App(tk.Tk):
                         self.inf_btn.configure(state=tk.NORMAL)
                 except Exception:
                     pass
+                # If still in infer mode, immediately queue another run on the latest frame
+                if self.infer_on and self.current_frame is not None:
+                    try:
+                        self._run_inference_on_current()
+                    except Exception:
+                        pass
             self.after(0, done)
 
         threading.Thread(target=worker, args=(self.current_frame.copy(),), daemon=True).start()

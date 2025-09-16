@@ -93,11 +93,26 @@ def infer_video(model_dir: str, video_path: str, prompt: str, frames: int, max_n
 def main():
     parser = argparse.ArgumentParser(description="FastVLM video → text (CLI)")
     parser.add_argument("--video", required=True, help="Path to input video file")
-    parser.add_argument("--model-dir", default=os.environ.get("MODEL_DIR", "checkpoints/llava-fastvithd_0.5b_stage3"))
-    parser.add_argument("--prompt", default="Describe the key events in this clip succinctly.")
+    parser.add_argument("--model-dir", default=os.environ.get("MODEL_DIR", "checkpoints/llava-fastvithd_7b_stage3"))
+    parser.add_argument(
+        "--prompt",
+        default=(
+            "Return ONLY minimal JSON for visible vehicles.\n\n"
+            "Schema (use exactly these keys):\n"
+            "{\n"
+            "  \"vehicles\": [\n"
+            "    {\"id\":\"v1\",\"type\":\"<sedan|suv|truck|van|bus|motorcycle|bicycle|unknown>\",\"color\":\"<e.g., white>\",\"notes\":[\"<e.g., parked|moving>\"]}\n"
+            "  ]\n"
+            "}\n\n"
+            "Rules:\n"
+            "- Output JSON only; no prose, no code fences.\n"
+            "- If no vehicles, use \"vehicles\": [].\n"
+            "- Use ids v1, v2, …; lowercase all strings; lists ≤3 items; omit a field if you cannot infer it; ensure valid JSON."
+        ),
+    )
     parser.add_argument("--frames", type=int, default=9)
-    parser.add_argument("--max-new-tokens", type=int, default=128)
-    parser.add_argument("--temperature", type=float, default=0.2)
+    parser.add_argument("--max-new-tokens", type=int, default=75)
+    parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--device", default=None, help="Force device: mps|cuda|cpu")
     parser.add_argument("--save-grid", default=None, help="Optional path to save the sampled-frames mosaic image")
     args = parser.parse_args()
@@ -127,4 +142,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

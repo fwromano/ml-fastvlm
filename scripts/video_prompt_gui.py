@@ -98,7 +98,21 @@ class App(tk.Tk):
         self.resizable(True, True)
 
         default_video = os.environ.get("VIDEO_PATH", "/Users/agc/Documents/output.mp4")
-        default_model = os.environ.get("MODEL_DIR", "checkpoints/llava-fastvithd_0.5b_stage3")
+        # Fixed model path (hide model selection)
+        self.default_model_dir = os.environ.get("MODEL_DIR", "checkpoints/llava-fastvithd_7b_stage3")
+        DEFAULT_PROMPT = (
+            "Return ONLY minimal JSON for visible vehicles.\n\n"
+            "Schema (use exactly these keys):\n"
+            "{\n"
+            "  \"vehicles\": [\n"
+            "    {\"id\":\"v1\",\"type\":\"<sedan|suv|truck|van|bus|motorcycle|bicycle|unknown>\",\"color\":\"<e.g., white>\",\"notes\":[\"<e.g., parked|moving>\"]}\n"
+            "  ]\n"
+            "}\n\n"
+            "Rules:\n"
+            "- Output JSON only; no prose, no code fences.\n"
+            "- If no vehicles, use \"vehicles\": [].\n"
+            "- Use ids v1, v2, …; lowercase all strings; lists ≤3 items; omit a field if you cannot infer it; ensure valid JSON."
+        )
 
         frm = ttk.Frame(self, padding=10)
         frm.pack(fill=tk.BOTH, expand=True)
@@ -116,18 +130,12 @@ class App(tk.Tk):
         self.video_btn = ttk.Button(frm, text="Browse", command=self.browse_video)
         self.video_btn.grid(row=1, column=2)
 
-        # Model dir
-        ttk.Label(frm, text="Model dir:").grid(row=2, column=0, sticky=tk.W)
-        self.model_var = tk.StringVar(value=default_model)
-        self.model_entry = ttk.Entry(frm, textvariable=self.model_var, width=70)
-        self.model_entry.grid(row=2, column=1, sticky=tk.EW, padx=(4, 4))
-        self.model_btn = ttk.Button(frm, text="Browse", command=self.browse_model)
-        self.model_btn.grid(row=2, column=2)
+        # Model selection removed from UI; using fixed default (self.default_model_dir)
 
         # Prompt
         ttk.Label(frm, text="Prompt:").grid(row=3, column=0, sticky=tk.NW)
-        self.prompt_text = tk.Text(frm, height=4, width=60)
-        self.prompt_text.insert("1.0", "Describe the ground terrain in three words and any vehicles by type and color.")
+        self.prompt_text = tk.Text(frm, height=8, width=60)
+        self.prompt_text.insert("1.0", DEFAULT_PROMPT)
         self.prompt_text.grid(row=3, column=1, sticky=tk.EW, padx=(4, 4))
         frm.rowconfigure(3, weight=0)
 
@@ -180,7 +188,7 @@ class App(tk.Tk):
 
     def set_controls_state(self, enabled: bool):
         state = tk.NORMAL if enabled else tk.DISABLED
-        for w in [self.video_entry, self.video_btn, self.model_entry, self.model_btn, self.prompt_text, self.play_btn, self.inf_btn]:
+        for w in [self.video_entry, self.video_btn, self.prompt_text, self.play_btn, self.inf_btn]:
             try:
                 w.configure(state=state)
             except Exception:
@@ -188,8 +196,7 @@ class App(tk.Tk):
 
     def _load_model_startup(self):
         try:
-            model_dir = self.model_var.get().strip()
-            self._load_model(model_dir)
+            self._load_model(self.default_model_dir)
             self.after(0, lambda: self.status_var.set(f"Model loaded • {self.device}"))
             self.after(0, lambda: self.set_controls_state(True))
         except Exception as e:
@@ -205,10 +212,7 @@ class App(tk.Tk):
             except Exception as e:
                 messagebox.showerror("Error", str(e))
 
-    def browse_model(self):
-        path = filedialog.askdirectory(title="Select model directory")
-        if path:
-            self.model_var.set(path)
+    # Model browsing disabled; model is fixed to self.default_model_dir
 
     def on_run(self):
         # Single inference on current frame
@@ -301,7 +305,6 @@ class App(tk.Tk):
             if self.infer_on and not self.infer_busy and self.bundle is not None:
                 self._run_inference_on_frame(pil)
         if self.playing:
-            # Run as fast as possible (no FPS cap)
             self.after(0, self._video_loop)
 
     def toggle_infer(self):
@@ -365,7 +368,7 @@ class App(tk.Tk):
                     images=images_batched,
                     image_sizes=[img.size],
                     do_sample=False,
-                    max_new_tokens=30,
+                    max_new_tokens=75,
                     use_cache=True,
                     stopping_criteria=stopping,
                 )
